@@ -3,7 +3,6 @@ import time
 import numpy as np
 import argparse
 import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
 import matplotlib.animation as animation
 
 
@@ -61,7 +60,9 @@ left_wall_x = -1.8
 fov_line_k = (bottom_wall_y - radar_pos[1]) / (left_wall_x - radar_pos[0])
 fov_line_z = radar_pos[1] - fov_line_k * radar_pos[0]
 fig, ax = plt.subplots(1, 2)
-line = [ax[0].plot([], [], 'ob', ms=5), ax[1].plot([], [], 'ob', ms=5)]
+line0, = ax[0].plot([], [], 'ob', ms=5)
+line1, = ax[1].plot([], [], 'ob', ms=5)
+line = [line0, line1]
 
 
 def init():
