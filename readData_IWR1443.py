@@ -313,8 +313,8 @@ def visualize(data):
         ax[1].set_title(f"NLoS Point Cloud, frame={frameNumber}")
         static_idx = pointCloud[:, 3] == 0
         dynamic_idx = pointCloud[:, 3] != 0
-        lines[0].set(data=(pointCloud[static_idx, 0], pointCloud[static_idx, 1]))
-        lines[1].set(data=(pointCloud[dynamic_idx, 0], pointCloud[dynamic_idx, 1]))
+        lines[0].set_data(pointCloud[static_idx, 0], pointCloud[static_idx, 1])
+        lines[1].set_data(pointCloud[dynamic_idx, 0], pointCloud[dynamic_idx, 1])
         static_idx = pointCloudNLOS[:, 3] == 0
         dynamic_idx = pointCloudNLOS[:, 3] != 0
         lines[2].set_data(pointCloudNLOS[static_idx, 0], pointCloudNLOS[static_idx, 1])

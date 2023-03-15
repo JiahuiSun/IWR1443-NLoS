@@ -3,7 +3,6 @@ import time
 import numpy as np
 import argparse
 import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
 import matplotlib.animation as animation
 
 
@@ -17,8 +16,14 @@ CLIPort = 0
 dataPort = 0
 configParameters = {}
 # radar related
-person_pos_key = ""
-radar_pos_key = ""
+person_pos_key = "1_0"
+radar_pos_key = "1-0"
+radar_angle = 45
+corner_args = {
+    'top_wall_y': 5.32, 
+    'bottom_wall_y': 3.18, 
+    'left_wall_x': -1.8
+}
 if person_pos_key == "1_0":
     ground_truth = [-3.6, 4.8]
 elif person_pos_key == "1_1":
@@ -38,7 +43,7 @@ if radar_pos_key == "1-0":
     radar_pos = [-0.6, 2.4]
 elif radar_pos_key == "1-1":
     radar_pos = [-0.6, 1.2]
-if radar_pos_key == "1-2":
+elif radar_pos_key == "1-2":
     radar_pos = [-0.6, 0.0]
 elif radar_pos_key == "2-0":
     radar_pos = [0.0, 2.4]
@@ -52,23 +57,20 @@ else:
 top_wall_y = 5.32
 bottom_wall_y = 3.18
 left_wall_x = -1.8
-fov_line_k = (bottom_wall_y - radar_pos(2)) / (left_wall_x - radar_pos(1))
-fov_line_z = radar_pos(2) - fov_line_k * radar_pos(1)
-fig, ax = plt.subplots(1, 2)
-line = []
-for i in range(2):
-    ax[i].set_xlabel('x(m)')
-    ax[i].set_ylabel('y(m)')
-    ax[i].set_title('Original Point Cloud')
-    ax[i].plot(ground_truth(1), ground_truth(2), '*g', ms=10)
-    ax[i].plot(radar_pos(1), radar_pos(2), 'dc', ms=10)
-    ax[i].set_xlim([-5, 5])
-    ax[i].set_ylim([0, 10])
-    ax[i].plot([-5, 5], [top_wall_y, top_wall_y])
-    ax[i].plot([-5, left_wall_x], [bottom_wall_y, bottom_wall_y])
-    ax[i].plot([left_wall_x, left_wall_x], [bottom_wall_y, 0])
-    ax[i].plot([radar_pos(1), (top_wall_y - fov_line_z) / fov_line_k], [radar_pos(2), top_wall_y])
-    line.append(ax[i].plot())
+fov_line_k = (bottom_wall_y - radar_pos[1]) / (left_wall_x - radar_pos[0])
+fov_line_z = radar_pos[1] - fov_line_k * radar_pos[0]
+fig, ax = plt.subplots(1, 2, figsize=(10, 4))
+def on_close(event):
+    CLIPort.write(('sensorStop\n').encode())
+    CLIPort.close()
+    dataPort.close()
+    print('sensorStop')
+fig.canvas.mpl_connect('close_event', on_close)
+line0, = ax[0].plot([], [], 'ob', ms=5)
+line1, = ax[0].plot([], [], 'or', ms=5)
+line2, = ax[1].plot([], [], 'ob', ms=5)
+line3, = ax[1].plot([], [], 'or', ms=5)
+lines = [line0, line1, line2, line3]
 
 
 # Function to configure the serial ports and send the data from
@@ -237,10 +239,11 @@ def readAndParseData14xx():
                     z = z / tlv_xyzQFormat
                     # Store the data in the pointCloud dictionary
                     pointCloud = np.array([x, y, z, dopplerVal]).T
+                    # pointCloudNLOS = pointCloud
                     # 坐标变换
-                    pointCloud = transform(pointCloud)
+                    pointCloud[:, :2] = transform(pointCloud[:, :2], radar_pos[0], radar_pos[1], 360-radar_angle)
                     # 过滤并映射
-                    pointCloudNLOS = nlosFilterAndMapping(pointCloud)
+                    pointCloudNLOS = nlosFilterAndMapping(pointCloud, radar_pos, corner_args)
             # Remove already processed data
             if idX > 0 and byteBufferLength > idX:
                 shiftSize = totalPacketLen
@@ -253,48 +256,86 @@ def readAndParseData14xx():
         yield frameNumber, pointCloud, pointCloudNLOS
 
 
-def nlosFilterAndMapping():
-    pass
+def line_by_2p(p1, p2):
+    ABC = np.array([p2[1]-p1[1], p1[0]-p2[0], p2[0]*p1[1]-p1[0]*p2[1]])
+    if p1[1] > p2[1]:
+        ABC = -ABC
+    return ABC
 
 
-def transform():
-    pass
+def nlosFilterAndMapping(pointCloud, radar_pos, corner_args):
+    point_cloud_ext = np.concatenate([pointCloud[:, :2], np.ones((pointCloud.shape[0], 1))], axis=1)
+    top_wall_y = corner_args['top_wall_y']
+    bottom_wall_y = corner_args['bottom_wall_y']
+    left_wall_x = corner_args['left_wall_x']
+
+    top_map_bottom_y = 2*top_wall_y - bottom_wall_y
+    top_map_radar = [radar_pos[0], 2*top_wall_y-radar_pos[1]]
+    left_border = line_by_2p(radar_pos, [left_wall_x, bottom_wall_y])
+    right_border = line_by_2p(top_map_radar, [left_wall_x, top_map_bottom_y])
+    top_border = top_map_bottom_y
+    flag1 = point_cloud_ext.dot(left_border) > 0
+    flag2 = point_cloud_ext.dot(right_border) < 0
+    flag3 = pointCloud[:, 1] < top_border
+    flag = np.logical_and(np.logical_and(flag1, flag2), flag3)
+    pointCloud[flag, 1] = 2*top_wall_y - pointCloud[flag, 1]
+    point_cloud_filter = pointCloud[flag, :]
+    return point_cloud_filter
+
+
+def transform(radar_xy, delta_x, delta_y, yaw):
+    yaw = yaw * np.pi / 180
+    rotation_matrix = np.array([[np.cos(yaw), np.sin(yaw)], [-np.sin(yaw), np.cos(yaw)]])
+    translation_vector = np.array([delta_x, delta_y]).reshape(-1, 1)
+    world_xy = (rotation_matrix.dot(radar_xy.T) + translation_vector).T
+    return world_xy
+
+
+def init():
+    for i in range(2):
+        ax[i].set_xlabel('x(m)')
+        ax[i].set_ylabel('y(m)')
+        ax[i].plot(ground_truth[0], ground_truth[1], '*g', ms=10)
+        ax[i].plot(radar_pos[0], radar_pos[1], 'dc', ms=10)
+        ax[i].set_xlim([-5, 5])
+        ax[i].set_ylim([0, 10])
+        ax[i].plot([-5, 5], [top_wall_y, top_wall_y], 'k')
+        ax[i].plot([-5, left_wall_x], [bottom_wall_y, bottom_wall_y], 'k')
+        ax[i].plot([left_wall_x, left_wall_x], [bottom_wall_y, 0], 'k')
+        ax[i].plot([radar_pos[0], (top_wall_y - fov_line_z) / fov_line_k], [radar_pos[1], top_wall_y], 'k')
+    return lines
 
 
 def visualize(data):
     frameNumber, pointCloud, pointCloudNLOS = data
+    if pointCloud is not None:
+        ax[0].set_title(f"Original Point Cloud, frame={frameNumber}")
+        ax[1].set_title(f"NLoS Point Cloud, frame={frameNumber}")
+        static_idx = pointCloud[:, 3] == 0
+        dynamic_idx = pointCloud[:, 3] != 0
+        lines[0].set_data(pointCloud[static_idx, 0], pointCloud[static_idx, 1])
+        lines[1].set_data(pointCloud[dynamic_idx, 0], pointCloud[dynamic_idx, 1])
+        static_idx = pointCloudNLOS[:, 3] == 0
+        dynamic_idx = pointCloudNLOS[:, 3] != 0
+        lines[2].set_data(pointCloudNLOS[static_idx, 0], pointCloudNLOS[static_idx, 1])
+        lines[3].set_data(pointCloudNLOS[dynamic_idx, 0], pointCloudNLOS[dynamic_idx, 1])
+    return lines
 
 
 def main(args):
     serialConfig(args.config, args.cPort, args.dPort)
     parseConfigFile(args.config)
-    
-    
     try:
-        ani = animation.FuncAnimation(fig, visualize, readAndParseData14xx)
-        for frameNumber, pointCloud in readAndParseData14xx():
-            if pointCloud is not None:
-                x = pointCloud[:, 0]
-                y = pointCloud[:, 1]
-                z = pointCloud[:, 2]
-                vel = pointCloud[:, 3]
-                visualize(pointCloud, frameNumber)
-                # ax.scatter(x, y, z)
-                # ax.set_xlim([-5, 5])
-                # ax.set_ylim([0, 10])
-                # ax.set_zlim([-1, 1])
-                # ax.set_title(f"frameNumber={frameNumber}")
-                # ax.set_xlabel("x(m)")
-                # ax.set_ylabel("y(m)")
-                # ax.set_zlabel("z(m)")
-                # plt.pause(1e-2)
-                # ax.cla()
-            # TODO: 为啥要sleep啊，难道不能读取太快？这里指的是什么采样频率是30Hz啊？
-            time.sleep(0.033) # Sampling frequency of 30 Hz
+        ani = animation.FuncAnimation(
+            fig, visualize, readAndParseData14xx, interval=33,
+            init_func=init, repeat=False
+        )
+        plt.show()
     except KeyboardInterrupt:
         CLIPort.write(('sensorStop\n').encode())
         CLIPort.close()
         dataPort.close()
+        print('sensorStop')
 
 
 if __name__ == "__main__":
