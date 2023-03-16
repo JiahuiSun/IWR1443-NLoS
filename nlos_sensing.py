@@ -2,16 +2,15 @@ import serial
 import time
 import numpy as np
 import argparse
+import queue
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 
+from read_IWR1443 import read_IWR1443
+
 
 # Global variables
-maxBufferSize = 2**15
-byteBuffer = np.zeros(maxBufferSize, dtype='uint8')
-byteBufferLength = 0
-MMWDEMO_UART_MSG_DETECTED_POINTS = 1
-magicWord = [2, 1, 4, 3, 6, 5, 8, 7]
+data_queue = queue.Queue()
 CLIPort = 0
 dataPort = 0
 configParameters = {}
@@ -122,138 +121,6 @@ def parseConfigFile(configFileName):
     configParameters["dopplerResolutionMps"] = 3e8 / (2 * startFreq * 1e9 * (idleTime + rampEndTime) * 1e-6 * configParameters["numDopplerBins"] * numTxAnt)
     configParameters["maxRange"] = (300 * 0.9 * digOutSampleRate)/(2 * freqSlopeConst * 1e3)
     configParameters["maxVelocity"] = 3e8 / (4 * startFreq * 1e9 * (idleTime + rampEndTime) * 1e-6 * numTxAnt)
-   
-
-# Funtion to read and parse the incoming data
-def readAndParseData14xx():    
-    global byteBufferLength, byteBuffer
-    while True:
-        magicOK = 0 # Checks if magic number has been read
-        frameNumber = 0
-        pointCloud, pointCloudNLOS = None, None
-
-        readBuffer = dataPort.read(dataPort.in_waiting)
-        byteVec = np.frombuffer(readBuffer, dtype='uint8')
-        byteCount = len(byteVec)
-        # Check that the buffer is not full, and then add the data to the buffer
-        if (byteBufferLength + byteCount) < maxBufferSize:
-            byteBuffer[byteBufferLength:byteBufferLength+byteCount] = byteVec
-            byteBufferLength = byteBufferLength + byteCount
-        # Check that the buffer has some data
-        if byteBufferLength > 16:
-            # Check for all possible locations of the magic word
-            possibleLocs = np.where(byteBuffer == magicWord[0])[0]
-            # Confirm that is the beginning of the magic word and store the index in startIdx
-            startIdx = []
-            for loc in possibleLocs:
-                check = byteBuffer[loc:loc+8]
-                if np.all(check == magicWord):
-                    startIdx.append(loc)
-            # Check that startIdx is not empty
-            if startIdx:
-                # Remove the data before the first start index
-                if startIdx[0] > 0 and startIdx[0] < byteBufferLength:
-                    byteBuffer[:byteBufferLength-startIdx[0]] = byteBuffer[startIdx[0]:byteBufferLength]
-                    byteBuffer[byteBufferLength-startIdx[0]:] = np.zeros(len(byteBuffer[byteBufferLength-startIdx[0]:]), dtype='uint8')
-                    byteBufferLength = byteBufferLength - startIdx[0]
-                # Check that there have no errors with the byte buffer length
-                if byteBufferLength < 0:
-                    byteBufferLength = 0
-                # word array to convert 4 bytes to a 32 bit number
-                word = [1, 2**8, 2**16, 2**24]
-                # Read the total packet length
-                totalPacketLen = np.matmul(byteBuffer[12:12+4], word)
-                # Check that all the packet has been read
-                if (byteBufferLength >= totalPacketLen) and (byteBufferLength != 0):
-                    magicOK = 1
-        
-        # If magicOK is equal to 1 then process the message
-        if magicOK:
-            # word array to convert 4 bytes to a 32 bit number
-            word = [1, 2**8, 2**16, 2**24]
-            # Initialize the pointer index
-            idX = 0
-            # Read the header
-            magicNumber = byteBuffer[idX:idX+8]
-            idX += 8
-            version = format(np.matmul(byteBuffer[idX:idX+4], word), 'x')
-            idX += 4
-            totalPacketLen = np.matmul(byteBuffer[idX:idX+4], word)
-            idX += 4
-            platform = format(np.matmul(byteBuffer[idX:idX+4], word), 'x')
-            idX += 4
-            frameNumber = np.matmul(byteBuffer[idX:idX+4], word)
-            idX += 4
-            timeCpuCycles = np.matmul(byteBuffer[idX:idX+4], word)
-            idX += 4
-            numDetectedObj = np.matmul(byteBuffer[idX:idX+4], word)
-            idX += 4
-            numTLVs = np.matmul(byteBuffer[idX:idX+4], word)
-            idX += 4
-            # subFrameNumber = np.matmul(byteBuffer[idX:idX+4],word)
-            # idX += 4
-            # Read the TLV messages
-            for tlvIdx in range(numTLVs):
-                # word array to convert 4 bytes to a 32 bit number
-                word = [1, 2**8, 2**16, 2**24]
-                # Check the header of the TLV message
-                tlv_type = np.matmul(byteBuffer[idX:idX+4], word)
-                idX += 4
-                tlv_length = np.matmul(byteBuffer[idX:idX+4], word)
-                idX += 4
-                # Read the data depending on the TLV message
-                if tlv_type == MMWDEMO_UART_MSG_DETECTED_POINTS:
-                    # word array to convert 4 bytes to a 16 bit number
-                    word = [1, 2**8]
-                    tlv_numObj = np.matmul(byteBuffer[idX:idX+2], word)
-                    idX += 2
-                    tlv_xyzQFormat = 2**np.matmul(byteBuffer[idX:idX+2], word)
-                    idX += 2
-                    # Initialize the arrays
-                    rangeIdx = np.zeros(tlv_numObj, dtype='int16')
-                    dopplerIdx = np.zeros(tlv_numObj, dtype='int16')
-                    peakVal = np.zeros(tlv_numObj, dtype='int16')
-                    x = np.zeros(tlv_numObj, dtype='int16')
-                    y = np.zeros(tlv_numObj, dtype='int16')
-                    z = np.zeros(tlv_numObj, dtype='int16')
-                    for objectNum in range(tlv_numObj):
-                        rangeIdx[objectNum] =  np.matmul(byteBuffer[idX:idX+2], word)
-                        idX += 2
-                        dopplerIdx[objectNum] = np.matmul(byteBuffer[idX:idX+2], word)
-                        idX += 2
-                        peakVal[objectNum] = np.matmul(byteBuffer[idX:idX+2], word)
-                        idX += 2
-                        x[objectNum] = np.matmul(byteBuffer[idX:idX+2], word)
-                        idX += 2
-                        y[objectNum] = np.matmul(byteBuffer[idX:idX+2], word)
-                        idX += 2
-                        z[objectNum] = np.matmul(byteBuffer[idX:idX+2], word)
-                        idX += 2
-                    # Make the necessary corrections and calculate the rest of the data
-                    rangeVal = rangeIdx * configParameters["rangeIdxToMeters"]
-                    # TODO: 为啥？
-                    dopplerIdx[dopplerIdx>(configParameters["numDopplerBins"]/2-1)] = dopplerIdx[dopplerIdx>(configParameters["numDopplerBins"]/2-1)] - 65535
-                    dopplerVal = dopplerIdx * configParameters["dopplerResolutionMps"]
-                    x = x / tlv_xyzQFormat
-                    y = y / tlv_xyzQFormat
-                    z = z / tlv_xyzQFormat
-                    # Store the data in the pointCloud dictionary
-                    pointCloud = np.array([x, y, z, dopplerVal]).T
-                    # pointCloudNLOS = pointCloud
-                    # 坐标变换
-                    pointCloud[:, :2] = transform(pointCloud[:, :2], radar_pos[0], radar_pos[1], 360-radar_angle)
-                    # 过滤并映射
-                    pointCloudNLOS = nlosFilterAndMapping(pointCloud, radar_pos, corner_args)
-            # Remove already processed data
-            if idX > 0 and byteBufferLength > idX:
-                shiftSize = totalPacketLen
-                byteBuffer[:byteBufferLength-shiftSize] = byteBuffer[shiftSize:byteBufferLength]
-                byteBuffer[byteBufferLength-shiftSize:] = np.zeros(len(byteBuffer[byteBufferLength-shiftSize:]), dtype='uint8')
-                byteBufferLength = byteBufferLength - shiftSize
-                # Check that there are no errors with the buffer length
-                if byteBufferLength < 0:
-                    byteBufferLength = 0
-        yield frameNumber, pointCloud, pointCloudNLOS
 
 
 def line_by_2p(p1, p2):
@@ -322,12 +189,41 @@ def visualize(data):
     return lines
 
 
+def nlosProcess():
+    global data_queue
+    receive_thread = read_IWR1443(data_queue, dataPort)
+    while True:
+        print(f"队列长度: {data_queue.qsize()}")
+        receive_thread.run_once()
+        if data_queue.empty():
+            yield None, None, None
+            continue
+        results = data_queue.get()
+        frame_num, point_cloud = results['frame_num'], results.get('detected_objects')
+        print(f"frame num: {frame_num}")
+        if point_cloud is None:
+            yield None, None, None
+        else:
+            # 计算速度
+            dopplerIdx = point_cloud[:, -1]
+            dopplerIdx[dopplerIdx>(configParameters["numDopplerBins"]/2-1)] = dopplerIdx[dopplerIdx>(configParameters["numDopplerBins"]/2-1)] - 65535
+            point_cloud[:, -1] = dopplerIdx * configParameters["dopplerResolutionMps"]
+            # 坐标变换
+            point_cloud[:, :2] = transform(point_cloud[:, :2], radar_pos[0], radar_pos[1], 360-radar_angle)
+            # 过滤并映射
+            point_cloud_nlos = nlosFilterAndMapping(point_cloud, radar_pos, corner_args)
+            data_queue.task_done()
+            yield frame_num, point_cloud, point_cloud_nlos
+
+
 def main(args):
     serialConfig(args.config, args.cPort, args.dPort)
     parseConfigFile(args.config)
     try:
+        # receive_thread = read_IWR1443(data_queue, dataPort)
+        # receive_thread.start()
         ani = animation.FuncAnimation(
-            fig, visualize, readAndParseData14xx, interval=33,
+            fig, visualize, nlosProcess, interval=33,
             init_func=init, repeat=False
         )
         plt.show()
