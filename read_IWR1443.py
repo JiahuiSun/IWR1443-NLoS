@@ -5,11 +5,12 @@ import numpy as np
 import time
 
 
-class read_IWR1443(Thread):
-    def __init__(self, data_queue, data_port):
+class read_IWR1443(Process):
+    def __init__(self, data_queue, data_port, delay=0.1):
         super().__init__()
         self.data_queue = data_queue
         self.data_port = data_port
+        self.delay = delay
         self.magic = b'\x02\x01\x04\x03\x06\x05\x08\x07'
         self.header_length = 36
 
@@ -28,9 +29,9 @@ class read_IWR1443(Thread):
 
     def parseDetectedObjects(self, data, tlvLength):
         numDetectedObj, xyzQFormat = struct.unpack('2H', data[:4])
-        x_vec = np.zeros(numDetectedObj, dtype='int16')
-        y_vec = np.zeros(numDetectedObj, dtype='int16')
-        z_vec = np.zeros(numDetectedObj, dtype='int16')
+        x_vec = np.zeros(numDetectedObj)
+        y_vec = np.zeros(numDetectedObj)
+        z_vec = np.zeros(numDetectedObj)
         doppler_vec = np.zeros(numDetectedObj, dtype='int16')
         for i in range(numDetectedObj):
             rangeIdx, dopplerIdx, peakVal, x, y, z = struct.unpack('3H3h', data[4+12*i:4+12*i+12])
@@ -69,7 +70,7 @@ class read_IWR1443(Thread):
             return None
         # 判断长度是否足够
         if len(packet) < total_packet_len:
-            print("Improper packet length found")
+            print("Improper packet length found", len(packet), total_packet_len)
             return None
         # 解析TLV
         packet = packet[self.header_length:]
@@ -87,6 +88,77 @@ class read_IWR1443(Thread):
                 raise Exception("Unimplemented tlv type %d"%(tlvType))
         return results
     
+    def parse_packet2(self, packet):
+        byteBuffer = np.frombuffer(packet, dtype='uint8')
+        # word array to convert 4 bytes to a 32 bit number
+        word = [1, 2**8, 2**16, 2**24]
+        # Initialize the pointer index
+        idX = 0
+        # Read the header
+        magicNumber = byteBuffer[idX:idX+8]
+        idX += 8
+        version = format(np.matmul(byteBuffer[idX:idX+4], word), 'x')
+        idX += 4
+        totalPacketLen = np.matmul(byteBuffer[idX:idX+4], word)
+        idX += 4
+        platform = format(np.matmul(byteBuffer[idX:idX+4], word), 'x')
+        idX += 4
+        frameNumber = np.matmul(byteBuffer[idX:idX+4], word)
+        idX += 4
+        timeCpuCycles = np.matmul(byteBuffer[idX:idX+4], word)
+        idX += 4
+        numDetectedObj = np.matmul(byteBuffer[idX:idX+4], word)
+        idX += 4
+        numTLVs = np.matmul(byteBuffer[idX:idX+4], word)
+        idX += 4
+        if len(packet) < totalPacketLen:
+            print("Improper packet length found", len(packet), totalPacketLen)
+            return None
+        results = {'frame_num': frameNumber}
+        # Read the TLV messages
+        for tlvIdx in range(numTLVs):
+            # word array to convert 4 bytes to a 32 bit number
+            word = [1, 2**8, 2**16, 2**24]
+            # Check the header of the TLV message
+            tlv_type = np.matmul(byteBuffer[idX:idX+4], word)
+            idX += 4
+            tlv_length = np.matmul(byteBuffer[idX:idX+4], word)
+            idX += 4
+            # word array to convert 4 bytes to a 16 bit number
+            word = [1, 2**8]
+            tlv_numObj = np.matmul(byteBuffer[idX:idX+2], word)
+            idX += 2
+            tlv_xyzQFormat = 2**np.matmul(byteBuffer[idX:idX+2], word)
+            idX += 2
+            # Initialize the arrays
+            rangeIdx = np.zeros(tlv_numObj, dtype='int16')
+            dopplerIdx = np.zeros(tlv_numObj, dtype='int16')
+            peakVal = np.zeros(tlv_numObj, dtype='int16')
+            x = np.zeros(tlv_numObj, dtype='int16')
+            y = np.zeros(tlv_numObj, dtype='int16')
+            z = np.zeros(tlv_numObj, dtype='int16')
+            for objectNum in range(tlv_numObj):
+                rangeIdx[objectNum] =  np.matmul(byteBuffer[idX:idX+2], word)
+                idX += 2
+                dopplerIdx[objectNum] = np.matmul(byteBuffer[idX:idX+2], word)
+                idX += 2
+                peakVal[objectNum] = np.matmul(byteBuffer[idX:idX+2], word)
+                idX += 2
+                x[objectNum] = np.matmul(byteBuffer[idX:idX+2], word)
+                idX += 2
+                y[objectNum] = np.matmul(byteBuffer[idX:idX+2], word)
+                idX += 2
+                z[objectNum] = np.matmul(byteBuffer[idX:idX+2], word)
+                idX += 2
+            # Make the necessary corrections and calculate the rest of the data
+            x = x / tlv_xyzQFormat
+            y = y / tlv_xyzQFormat
+            z = z / tlv_xyzQFormat
+            # Store the data in the pointCloud dictionary
+            pointCloud = np.array([x, y, z, dopplerIdx]).T
+            results['detected_objects'] = pointCloud
+        return results
+
     def run_once(self, is_file=False):
         if is_file:
             with open(self.data_port, 'rb') as f:
@@ -115,4 +187,4 @@ class read_IWR1443(Thread):
                     results = self.parse_packet(packet)
                     if results is not None:
                         self.data_queue.put(results)
-            time.sleep(0.1)
+            time.sleep(self.delay)

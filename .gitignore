@@ -135,3 +135,4 @@ data/
 *.out
 output/
 .vscode/
+test*.ipynb

@@ -5,12 +5,13 @@ import argparse
 import queue
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
+from multiprocessing import Queue
 
 from read_IWR1443 import read_IWR1443
 
 
 # Global variables
-data_queue = queue.Queue()
+data_queue = Queue()
 CLIPort = 0
 dataPort = 0
 configParameters = {}
@@ -59,12 +60,6 @@ left_wall_x = -1.8
 fov_line_k = (bottom_wall_y - radar_pos[1]) / (left_wall_x - radar_pos[0])
 fov_line_z = radar_pos[1] - fov_line_k * radar_pos[0]
 fig, ax = plt.subplots(1, 2, figsize=(10, 4))
-def on_close(event):
-    CLIPort.write(('sensorStop\n').encode())
-    CLIPort.close()
-    dataPort.close()
-    print('sensorStop')
-fig.canvas.mpl_connect('close_event', on_close)
 line0, = ax[0].plot([], [], 'ob', ms=5)
 line1, = ax[0].plot([], [], 'or', ms=5)
 line2, = ax[1].plot([], [], 'ob', ms=5)
@@ -190,17 +185,13 @@ def visualize(data):
 
 
 def nlosProcess():
-    global data_queue
-    receive_thread = read_IWR1443(data_queue, dataPort)
     while True:
         print(f"队列长度: {data_queue.qsize()}")
-        receive_thread.run_once()
         if data_queue.empty():
             yield None, None, None
             continue
         results = data_queue.get()
         frame_num, point_cloud = results['frame_num'], results.get('detected_objects')
-        print(f"frame num: {frame_num}")
         if point_cloud is None:
             yield None, None, None
         else:
@@ -208,11 +199,11 @@ def nlosProcess():
             dopplerIdx = point_cloud[:, -1]
             dopplerIdx[dopplerIdx>(configParameters["numDopplerBins"]/2-1)] = dopplerIdx[dopplerIdx>(configParameters["numDopplerBins"]/2-1)] - 65535
             point_cloud[:, -1] = dopplerIdx * configParameters["dopplerResolutionMps"]
+            # point_cloud_nlos = point_cloud
             # 坐标变换
             point_cloud[:, :2] = transform(point_cloud[:, :2], radar_pos[0], radar_pos[1], 360-radar_angle)
             # 过滤并映射
             point_cloud_nlos = nlosFilterAndMapping(point_cloud, radar_pos, corner_args)
-            data_queue.task_done()
             yield frame_num, point_cloud, point_cloud_nlos
 
 
@@ -220,18 +211,20 @@ def main(args):
     serialConfig(args.config, args.cPort, args.dPort)
     parseConfigFile(args.config)
     try:
-        # receive_thread = read_IWR1443(data_queue, dataPort)
-        # receive_thread.start()
+        receive_thread = read_IWR1443(data_queue, dataPort, args.read_delay)
+        receive_thread.start()
         ani = animation.FuncAnimation(
             fig, visualize, nlosProcess, interval=33,
             init_func=init, repeat=False
         )
         plt.show()
+        receive_thread.terminate()
     except KeyboardInterrupt:
         CLIPort.write(('sensorStop\n').encode())
         CLIPort.close()
         dataPort.close()
         print('sensorStop')
+        receive_thread.terminate()
 
 
 if __name__ == "__main__":
@@ -239,5 +232,6 @@ if __name__ == "__main__":
     parser.add_argument("--config", type=str, default="profiles/profile.cfg")
     parser.add_argument("--cPort", type=str, default="/dev/ttyACM0")
     parser.add_argument("--dPort", type=str, default="/dev/ttyACM1")
+    parser.add_argument("--read_delay", type=float, default=0.1, help="Delay for reading sensor data.")
     args = parser.parse_args()
     main(args)
