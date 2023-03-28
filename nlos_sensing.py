@@ -1,7 +1,6 @@
 import numpy as np
 
 
-# 我要做的几件事：读数据、NLoS过滤和映射、可视化
 def line_by_2p(p1, p2):
     """A ray from p1 to p2.
     """
@@ -12,20 +11,30 @@ def line_by_2p(p1, p2):
 
 
 def nlosFilterAndMapping(pointCloud, radar_pos, corner_args):
+    """TODO: 现在只实现了L型转角
+    """
     point_cloud_ext = np.concatenate([pointCloud[:, :2], np.ones((pointCloud.shape[0], 1))], axis=1)
     top_wall_y = corner_args['top_wall_y']
-    bottom_wall_y = corner_args['bottom_wall_y']
-    left_wall_x = corner_args['left_wall_x']
-
-    top_map_bottom_y = 2*top_wall_y - bottom_wall_y
+    side_wall_x = corner_args['side_wall_x']
+    inner_corner = corner_args['inner_corner']
+    # Filter
+    top_map_corner = [inner_corner[0], 2*top_wall_y - inner_corner[1]]
     top_map_radar = [radar_pos[0], 2*top_wall_y-radar_pos[1]]
-    left_border = line_by_2p(radar_pos, [left_wall_x, bottom_wall_y])
-    right_border = line_by_2p(top_map_radar, [left_wall_x, top_map_bottom_y])
-    top_border = top_map_bottom_y
+    # 用前墙反射
+    top_border = top_map_corner[1]
+    # 如果转角在雷达左边
+    if inner_corner[0] < radar_pos[0]:
+        left_border = line_by_2p(radar_pos, inner_corner)
+        right_border = line_by_2p(top_map_radar, top_map_corner)
+    # 如果转角在雷达右边
+    elif inner_corner[0] > radar_pos[0]:
+        left_border = line_by_2p(top_map_radar, top_map_corner)
+        right_border = line_by_2p(radar_pos, inner_corner)
     flag1 = point_cloud_ext.dot(left_border) > 0
     flag2 = point_cloud_ext.dot(right_border) < 0
     flag3 = pointCloud[:, 1] < top_border
     flag = np.logical_and(np.logical_and(flag1, flag2), flag3)
+    # Mapping
     pointCloud[flag, 1] = 2*top_wall_y - pointCloud[flag, 1]
     point_cloud_filter = pointCloud[flag, :]
     return point_cloud_filter

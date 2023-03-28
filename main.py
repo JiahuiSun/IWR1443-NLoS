@@ -23,15 +23,15 @@ if not os.path.exists(output_dir):
 radar_pos = [-0.6, 2.4]
 radar_angle = 360 - 45  # radar逆时针旋转多少度和世界坐标系重合
 ground_truth = [-3.6, 4.8]
-corner_args = {
-    'top_wall_y': 5.32, 
-    'bottom_wall_y': 3.18, 
-    'left_wall_x': -1.8
-}
+inner_corner = [-1.8, 3.18]
 top_wall_y = 5.32
-bottom_wall_y = 3.18
-left_wall_x = -1.8
-fov_line_k = (bottom_wall_y - radar_pos[1]) / (left_wall_x - radar_pos[0])
+side_wall_x = None
+corner_args = {
+    'top_wall_y': top_wall_y, 
+    'side_wall_x': side_wall_x,
+    'inner_corner': inner_corner
+}
+fov_line_k = (inner_corner[1] - radar_pos[1]) / (inner_corner[0] - radar_pos[0])
 fov_line_z = radar_pos[1] - fov_line_k * radar_pos[0]
 fig, ax = plt.subplots(1, 2, figsize=(10, 4))
 line0, = ax[0].plot([], [], 'ob', ms=5)
@@ -50,8 +50,8 @@ def init_fig():
         ax[i].set_xlim([-5, 5])
         ax[i].set_ylim([0, 10])
         ax[i].plot([-5, 5], [top_wall_y, top_wall_y], 'k')
-        ax[i].plot([-5, left_wall_x], [bottom_wall_y, bottom_wall_y], 'k')
-        ax[i].plot([left_wall_x, left_wall_x], [bottom_wall_y, 0], 'k')
+        ax[i].plot([-5, inner_corner[0]], [inner_corner[1], inner_corner[1]], 'k')
+        ax[i].plot([inner_corner[0], inner_corner[0]], [inner_corner[1], 0], 'k')
         ax[i].plot([radar_pos[0], (top_wall_y - fov_line_z) / fov_line_k], [radar_pos[1], top_wall_y], 'k')
     return lines
 
@@ -70,6 +70,7 @@ def visualize(data):
         dynamic_idx = pointCloudNLOS[:, 3] != 0
         lines[2].set_data(pointCloudNLOS[static_idx, 0], pointCloudNLOS[static_idx, 1])
         lines[3].set_data(pointCloudNLOS[dynamic_idx, 0], pointCloudNLOS[dynamic_idx, 1])
+        # 保存save帧有点云的帧
         if save > 0 and cnt < save:
             np.save(os.path.join(output_dir, f'frame{frameNumber}.npy'), pointCloudNLOS)
         cnt += 1
@@ -104,15 +105,14 @@ def main(args):
     CLIPort, dataPort = serialConfig(args.config, args.cPort, args.dPort)
     configParameters = parseConfigFile(args.config)
     try:
-        receive_thread = read_IWR1443(data_queue, dataPort, args.read_delay)
+        receive_thread = read_IWR1443(data_queue, dataPort, args.read_interval)
         receive_thread.start()
         ani = animation.FuncAnimation(
-            fig, visualize, nlosProcess, interval=33,
-            init_func=init_fig, repeat=False, save_count=save*2 if save > 0 else None
+            fig, visualize, nlosProcess, interval=args.proc_interval,
+            init_func=init_fig, repeat=False, save_count=100
         )
-        if save > 0:
-            ani.save(os.path.join(output_dir, "ani.gif"), writer='imagemagick')
         plt.show()
+        ani.save(os.path.join(output_dir, "ani.gif"), writer='imagemagick')
         receive_thread.terminate()
         CLIPort.write(('sensorStop\n').encode())
         CLIPort.close()
@@ -129,6 +129,7 @@ if __name__ == "__main__":
     parser.add_argument("--config", type=str, default="profiles/profile.cfg")
     parser.add_argument("--cPort", type=str, default="/dev/ttyACM0")
     parser.add_argument("--dPort", type=str, default="/dev/ttyACM1")
-    parser.add_argument("--read_delay", type=float, default=0.1, help="Delay for reading sensor data.")
+    parser.add_argument("--read_interval", type=float, default=0.1, help="Delay for reading sensor data (s).")
+    parser.add_argument("--proc_interval", type=float, default=50, help="Delay for reading sensor data (ms).")
     args = parser.parse_args()
     main(args)

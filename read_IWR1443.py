@@ -70,7 +70,7 @@ class read_IWR1443(Process):
             return None
         # 判断长度是否足够
         if len(packet) < total_packet_len:
-            print("Improper packet length found", len(packet), total_packet_len)
+            print(f"Improper packet length found: packet len={len(packet)}, total_len={total_packet_len}")
             return None
         # 解析TLV
         packet = packet[self.header_length:]
