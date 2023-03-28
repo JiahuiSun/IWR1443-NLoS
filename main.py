@@ -111,7 +111,8 @@ def main(args):
             fig, visualize, nlosProcess, interval=args.proc_interval,
             init_func=init_fig, repeat=False, save_count=100
         )
-        plt.show()
+        if args.render:
+            plt.show()
         ani.save(os.path.join(output_dir, "ani.gif"), writer='imagemagick')
         receive_thread.terminate()
         CLIPort.write(('sensorStop\n').encode())
@@ -129,6 +130,7 @@ if __name__ == "__main__":
     parser.add_argument("--config", type=str, default="profiles/profile.cfg")
     parser.add_argument("--cPort", type=str, default="/dev/ttyACM0")
     parser.add_argument("--dPort", type=str, default="/dev/ttyACM1")
+    parser.add_argument("--render", action="store_true")
     parser.add_argument("--read_interval", type=float, default=0.1, help="Delay for reading sensor data (s).")
     parser.add_argument("--proc_interval", type=float, default=50, help="Delay for reading sensor data (ms).")
     args = parser.parse_args()
